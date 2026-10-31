@@ -563,7 +563,6 @@ function applyInputsMacro(
   // shield is scoped to that one surface — a `when:` or `systemPrompt:` naming the same
   // input still reads the run's bag, and a caller who never supplied it still gets the
   // load error.
-  const boundLocally = new Set(Object.keys(readComposedBindings(node) ?? {}));
   const substitute = (text: string, shielded?: ReadonlySet<string>): string =>
     text.replace(INPUTS_REF, (match, name: string) => {
       // A name the node's own `with:` binds is neither the caller's to supply nor the
@@ -624,7 +623,12 @@ function applyInputsMacro(
     )
       return slot.value;
     if (slot.surface === 'condition') return substituteWhen(slot.value);
-    return substitute(slot.value, slot.name === 'agent.prompt' ? boundLocally : undefined);
+    return substitute(
+      slot.value,
+      slot.name === 'agent.prompt'
+        ? new Set(Object.keys(readComposedBindings(slot.owner) ?? {}))
+        : undefined
+    );
   });
   const valueMapped = mapNodeTemplateValueSlots(textMapped, slot => {
     const value = substituteValue(slot.value);
