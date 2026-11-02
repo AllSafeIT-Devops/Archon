@@ -919,6 +919,90 @@ describe('CodexProvider', () => {
       const chunks = await streamOf({ notifications: [agentMessage('{"a":1}')] });
       expect(resultOf(chunks).structuredOutput).toBeUndefined();
     });
+
+    test.each([
+      ['request-level', { outputFormat: { type: 'json_schema', schema } }],
+      ['node-level', { nodeConfig: { output_format: schema } }],
+    ])(
+      'Grok delivers the original %s schema in the prompt on a resumed turn',
+      async (_label, format) => {
+        const original = JSON.stringify(schema);
+        const { provider, server } = providerWith();
+        await run(
+          provider,
+          {
+            ...format,
+            model: 'grok-4.7',
+            systemPrompt: 'Preserve the real fixture values.',
+          } as SendQueryOptions,
+          'existing-session',
+          'Produce the fixture.'
+        );
+        const turn = paramsOf(server, 'turn/start');
+        expect(turn?.outputSchema).toBeUndefined();
+        const input = turn?.input as { text: string }[];
+        expect(input[0].text).toContain(
+          'Preserve the real fixture values.\n\n---\n\nProduce the fixture.'
+        );
+        expect(input[0].text).toContain('ONLY a JSON object');
+        expect(input[0].text).toContain(JSON.stringify(schema, null, 2));
+        expect(JSON.stringify(schema)).toBe(original);
+      }
+    );
+
+    test('Grok still parses its complete final JSON object', async () => {
+      const expected = { summary: 'Real repository values', meta: { tag: 'fixture/value' } };
+      const chunks = await streamOf(
+        { notifications: [agentMessage(JSON.stringify(expected))] },
+        { model: 'grok-4.7', outputFormat: { type: 'json_schema', schema } }
+      );
+      expect(resultOf(chunks).structuredOutput).toEqual(expected);
+    });
+
+    test('Grok rejects malformed final JSON instead of repairing or inferring values', async () => {
+      const chunks = await streamOf(
+        { notifications: [agentMessage('{"summary":')] },
+        { model: 'grok-4.7', outputFormat: { type: 'json_schema', schema } }
+      );
+      expect(resultOf(chunks).structuredOutput).toBeUndefined();
+      expect(chunks).toContainEqual(
+        expect.objectContaining({ type: 'warning', code: 'codex.structured_output_not_json' })
+      );
+    });
+
+    test('Grok without a declared schema keeps the plain prompt', async () => {
+      const { provider, server } = providerWith();
+      const chunks = await run(provider, { model: 'grok-4.7' }, undefined, 'Plain request.');
+      expect(paramsOf(server, 'turn/start')?.outputSchema).toBeUndefined();
+      expect(paramsOf(server, 'turn/start')?.input).toEqual([
+        { type: 'text', text: 'Plain request.', text_elements: [] },
+      ]);
+      expect(resultOf(chunks).structuredOutput).toBeUndefined();
+    });
+
+    test('GPT models retain native schema delivery', async () => {
+      const { provider, server } = providerWith();
+      await run(provider, {
+        model: 'gpt-6.1-sol',
+        outputFormat: { type: 'json_schema', schema },
+      });
+      expect(paramsOf(server, 'turn/start')?.outputSchema).toEqual({
+        type: 'object',
+        properties: {
+          summary: { type: 'string' },
+          meta: {
+            type: 'object',
+            properties: { tag: { type: 'string' } },
+            additionalProperties: false,
+          },
+        },
+        required: ['summary'],
+        additionalProperties: false,
+      });
+      expect(paramsOf(server, 'turn/start')?.input).toEqual([
+        { type: 'text', text: 'test prompt', text_elements: [] },
+      ]);
+    });
   });
 
   describe('systemPrompt delivery (issue #1837)', () => {

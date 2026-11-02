@@ -37,6 +37,7 @@ import { resolveCodexBinary, resolveCodexBinaryWithSource } from './binary-resol
 import { BUNDLED_VERSION, createLogger } from '@archon/paths';
 import { loadMcpConfig } from '../mcp/config';
 import {
+  augmentPromptForJsonSchema,
   hasOpenAdditionalProperties,
   normalizeJsonSchemaForOpenAiStrict,
 } from '../shared/structured-output';
@@ -279,9 +280,13 @@ function buildModelAccessMessage(model?: string): string {
 }
 
 /** The output schema a turn sends, and whether its final message is parsed as JSON. */
-function buildOutputSchema(requestOptions?: SendQueryOptions): {
+function buildOutputSchema(
+  requestOptions?: SendQueryOptions,
+  model?: string
+): {
   outputSchema: JsonValue | undefined;
   hasOutputFormat: boolean;
+  promptSchema?: Record<string, unknown>;
 } {
   // Preserve the original precedence: an explicit `outputFormat` wins over
   // `nodeConfig.output_format` even when its `.schema` is undefined. Note the
@@ -296,6 +301,12 @@ function buildOutputSchema(requestOptions?: SendQueryOptions): {
     requestOptions?.outputFormat ?? requestOptions?.nodeConfig?.output_format
   );
   if (rawSchema === undefined) return { outputSchema: undefined, hasOutputFormat };
+  // The verified Grok gateway corrupts string values in native schema mode.
+  // Deliver the original schema in the prompt; final JSON parsing and the
+  // workflow's schema validation still apply.
+  if (model === 'grok-4.7') {
+    return { outputSchema: undefined, hasOutputFormat, promptSchema: rawSchema };
+  }
   // OpenAI Structured Outputs strict-mode requires additionalProperties:false
   // on every object schema (HTTP 400 invalid_json_schema otherwise). Workflow
   // authors write portable output_format schemas, so normalize here before
@@ -1034,7 +1045,15 @@ export class CodexProvider implements IAgentProvider {
       const { env, apiKey } = launch;
       // `CODEX_API_KEY` opts a turn into API-key auth. Without it Codex uses the user's
       // own login in their CODEX_HOME. The ephemeral store keeps the key out of that home.
-      const { outputSchema, hasOutputFormat } = buildOutputSchema(requestOptions);
+      const { outputSchema, hasOutputFormat, promptSchema } = buildOutputSchema(
+        requestOptions,
+        model
+      );
+      const effectivePrompt = buildEffectivePrompt(prompt, requestOptions);
+      const userPrompt =
+        promptSchema === undefined
+          ? effectivePrompt
+          : augmentPromptForJsonSchema(effectivePrompt, promptSchema);
       const effort = resolveModelReasoningEffort(
         requestOptions?.nodeConfig,
         codexConfig.modelReasoningEffort
@@ -1075,9 +1094,7 @@ export class CodexProvider implements IAgentProvider {
           config: buildThreadConfig(codexConfig, mcpServers, nodePlugins !== undefined),
         },
         turnParams: {
-          input: [
-            { type: 'text', text: buildEffectivePrompt(prompt, requestOptions), text_elements: [] },
-          ],
+          input: [{ type: 'text', text: userPrompt, text_elements: [] }],
           ...(effort ? { effort } : {}),
           ...(outputSchema !== undefined ? { outputSchema } : {}),
         },

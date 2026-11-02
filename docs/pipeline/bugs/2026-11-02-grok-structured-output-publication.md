@@ -23,3 +23,7 @@ Promotion blocker: yes for the quotes release. Clear with behavioral RED/GREEN t
 Next action / owner: Codex controller. Use prompt schema delivery only for the verified grok-4.7 transport; retain strict final JSON parsing and engine schema validation. Add a narrowly admitted, verified same-run retry for this exact output-contract failure; retain cap, brake, slot, identity and ambiguity checks. Do not guess missing values, edit saved snapshots/statuses, repeat old triage recovery, or create another run/PR.
 
 Origin: AllSafeIT-Devops/Archon PR1 supporting AllSafeIT-Devops/allsafe-hub PR3376 and work order3397.
+
+## Provider repair progress
+
+The supporting branch now implements exact-model prompt schema delivery while retaining strict JSON parsing and engine validation. Two behavioral regressions failed before the fix; the provider suite has97PASS/0FAIL and its package typecheck passes. All8 prescribed relevant test groups pass. The unsuitable combined-directory invocation retains20 failures, reproduced by name on the untouched base; it is not a passing suite. Authenticated fresh and resumed Grok calls through the changed provider preserve every fixture value. The patch is not installed. The controller retry, final implementation reviews, live run722e continuation and all quotes release evidence remain pending.
