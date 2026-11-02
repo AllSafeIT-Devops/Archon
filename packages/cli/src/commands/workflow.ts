@@ -387,6 +387,7 @@ export interface WorkflowRunOptions {
   inputs?: string[];
   /** Raw repeatable `--model name=spec` mappings; parsed once at the invocation gate. */
   modelAssignments?: string[];
+  resumeModelRebind?: import('@archon/workflows/run-ai-configuration').ResumeModelRebind;
   /** Local YAML file supplying a sparse configuration layer for this run. */
   configPath?: string;
   /** @internal Structurally validated immutable layer transferred from a detached parent. */
@@ -2285,7 +2286,7 @@ async function runWorkflowWithOwnedSource(
       ...(detachedPreCreatedRun ? { inheritAiConfiguration: true } : {}),
       userId: detachedPreCreatedRun ? (detachedPreCreatedRun.user_id ?? undefined) : cliUserId,
       ...(isContinuation && continuationRun
-        ? { continuationRun }
+        ? { continuationRun, resumeModelRebind: options.resumeModelRebind }
         : {
             runConfig,
             ...(modelOverrides
@@ -3357,7 +3358,10 @@ async function runWorkflowWithOwnedSource(
           legacyWorkflow: workflow,
           userMessage,
           run: resumable,
-          options: commonOptions,
+          options: {
+            ...commonOptions,
+            ...(options.resumeModelRebind ? { resumeModelRebind: options.resumeModelRebind } : {}),
+          },
         });
       } catch (error) {
         const err = error as Error;
@@ -5652,9 +5656,24 @@ export async function workflowResumeCommand(
   runId: string,
   json?: boolean,
   cwd?: string,
-  detach?: boolean
+  detach?: boolean,
+  rebind?: { assignments: string[]; reason: string }
 ): Promise<void> {
   const { resumeWorkflow: resumeWorkflowOp } = host.operations;
+  const resumeModelRebind = rebind
+    ? {
+        overrides: parseRunModelAssignments(rebind.assignments),
+        reason: rebind.reason.trim(),
+      }
+    : undefined;
+  if (resumeModelRebind && (!resumeModelRebind.reason || !rebind?.assignments.length))
+    throw new Error('Model rebind requires nonempty bindings and an operator reason.');
+  if (resumeModelRebind && json && !detach)
+    throw new Error('Model rebind requires execution; use --detach with --json.');
+  const assertRebindTarget = (run: WorkflowRun): void => {
+    if (resumeModelRebind && run.status !== 'failed')
+      throw new Error('Explicit model rebind requires a failed terminal run.');
+  };
 
   // --detach: validate read-only (resumeWorkflowOp checks the run is resumable),
   // then let a detached child re-invoke the blocking resume and own all mutation
@@ -5664,6 +5683,7 @@ export async function workflowResumeCommand(
     const resolvedId = await resolveRunIdArg(host, runId, cwd);
     await runDetachedControlCommand(resolvedId, 'resume', json, cwd, async () => {
       const run = await resumeWorkflowOp(resolvedId, { kind: 'operator' });
+      assertRebindTarget(run);
       // The inline path below refuses a run with no recorded working path. Check it
       // here too, on the run the precheck already holds (message copied verbatim):
       // otherwise the parent acks success and the child throws where nobody reads it.
@@ -5707,6 +5727,7 @@ export async function workflowResumeCommand(
 
   const resolvedId = await resolveRunIdArg(host, runId, cwd);
   const run = await resumeWorkflowOp(resolvedId, { kind: 'operator' });
+  assertRebindTarget(run);
   if (!run.working_path) {
     throw new Error(
       `Workflow run '${resolvedId}' has no working path recorded.\n` +
@@ -5732,6 +5753,7 @@ export async function workflowResumeCommand(
       // Continue from the source this run froze, not a fresh capture of the target.
       continuationRun: run,
       resume: true,
+      resumeModelRebind,
       codebaseId: run.codebase_id ?? undefined,
       discoveryCwd,
     });

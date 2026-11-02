@@ -73,8 +73,10 @@ mock.module('@archon/git', () => ({
 // the InProcessWorkflowEngine -> executeWorkflow/hydrateResumableRun wiring. ---
 type ExecuteDagWorkflow = typeof import('./dag-executor').executeDagWorkflow;
 let executedWorkflow: Parameters<ExecuteDagWorkflow>[0]['workflow'] | undefined;
+let executedInput: Parameters<ExecuteDagWorkflow>[0] | undefined;
 const mockExecuteDagWorkflow = mock<ExecuteDagWorkflow>(async input => {
   executedWorkflow = input.workflow;
+  executedInput = input;
   return undefined;
 });
 mock.module('./dag-executor', () => ({
@@ -113,4 +115,5 @@ import { runWorkflowEngineContractTests } from './engine-contract-tests';
 
 runWorkflowEngineContractTests(providerRegistry, deps => new InProcessWorkflowEngine(deps), {
   executedWorkflow: () => executedWorkflow,
+  executedInput: () => executedInput,
 });

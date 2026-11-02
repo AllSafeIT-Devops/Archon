@@ -16,6 +16,11 @@ import type {
 } from './engine-port';
 import type { DagResumeSnapshot, IWorkflowStore } from './store';
 import { WorkflowNotResumableError } from './store';
+import {
+  createRunAiConfigurationSnapshot,
+  readRunAiConfigurationSnapshot,
+} from './run-ai-configuration';
+import { buildAiProfile } from './model-validation';
 export { WorkflowNotResumableError } from './store';
 import type { ResolvedWorkflow, WorkflowDefinition, WorkflowRun } from './schemas';
 
@@ -228,6 +233,9 @@ async function capturedRun(
 
 interface WorkflowEngineContractObservations {
   executedWorkflow: () => ResolvedWorkflow | undefined;
+  executedInput?: () =>
+    | Parameters<typeof import('./dag-executor').executeDagWorkflow>[0]
+    | undefined;
 }
 
 export function runWorkflowEngineContractTests(
@@ -432,6 +440,94 @@ export function runWorkflowEngineContractTests(
         success: true,
         workflowRunId: 'accepted-run',
       });
+    });
+
+    it('rebinds unfinished work while preserving identity, original configuration and completed output', async () => {
+      const snapshot = createRunAiConfigurationSnapshot(
+        providers,
+        defaultConfig(),
+        buildAiProfile('claude'),
+        {}
+      );
+      const run = makeRun({
+        status: 'failed',
+        metadata: { ai_configuration: snapshot, model_bindings: { original: true } },
+      });
+      const original = structuredClone(run.metadata.ai_configuration);
+      let creates = 0;
+      const store = resumableStore({
+        createWorkflowRun: async () => {
+          creates++;
+          return makeRun();
+        },
+        resumeWorkflowRun: async () => ({ ...run, status: 'running' }),
+        updateWorkflowRun: async (_id, update) => {
+          Object.assign(run.metadata, update.metadata);
+        },
+        getWorkflowRun: async () => ({ ...run, status: 'completed' }),
+        listWorkflowRunNodeSessions: async () => [
+          {
+            workflow_run_id: run.id,
+            node_id: 'node1',
+            provider: 'claude',
+            provider_session_id: 'claude-session',
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      });
+      const admission = await makeEngine(makeDeps(providers, store)).resume({
+        ...resumeCallInput(),
+        run,
+        options: {
+          resumeModelRebind: {
+            reason: 'Owner selected Grok',
+            overrides: {
+              tiers: { large: 'codex/grok-4.7', medium: 'codex/grok-4.7', small: 'codex/grok-4.7' },
+            },
+          },
+        },
+      });
+      expect(admission).toMatchObject({ accepted: true, runId: run.id });
+      if (!admission.accepted) throw new Error('expected resume');
+      expect(await admission.settled).toMatchObject({ success: true, workflowRunId: run.id });
+      expect(creates).toBe(0);
+      expect(run.metadata.ai_configuration).toEqual(original);
+      expect(run.metadata.initial_model_bindings).toEqual({ original: true });
+      const current = readRunAiConfigurationSnapshot(providers, run.metadata);
+      expect(current?.modelOverrides.tiers?.large).toEqual({
+        provider: 'codex',
+        model: 'grok-4.7',
+      });
+      const input = observations.executedInput?.();
+      expect(input?.priorCompletedNodes?.get('node1')).toEqual({ output: 'out1' });
+      expect(input?.priorNodeSessions).toEqual([]);
+    });
+
+    it('rejects model rebind on live/paused runs and invalid configurations before claiming', async () => {
+      for (const status of ['paused', 'running', 'completed', 'failed'] as const) {
+        let claims = 0;
+        const store = resumableStore({
+          resumeWorkflowRun: async () => {
+            claims++;
+            return makeRun();
+          },
+        });
+        const error = await captureRejection(
+          makeEngine(makeDeps(providers, store)).resume({
+            ...resumeCallInput(),
+            run: makeRun({ status }),
+            options: {
+              resumeModelRebind: {
+                reason: 'Owner selected Grok',
+                overrides: { tiers: { large: 'grok/grok-4.7' } },
+              },
+            },
+          })
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect(claims).toBe(0);
+      }
     });
 
     it('preserves a paused result', async () => {

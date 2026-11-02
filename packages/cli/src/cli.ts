@@ -54,6 +54,7 @@ import {
   rejectConfigOnContinue,
   rejectConfigOutsideRun,
   rejectModelOnContinue,
+  rejectInvalidModelRebind,
   RESUME_RUN_CONFIG_CONFLICT,
 } from './dispatch-guards';
 import { resolveCliExitCode } from './utils/workflow-exit-code';
@@ -303,6 +304,17 @@ async function main(): Promise<number> {
   }
 
   const { values, positionals } = parsedArgs;
+  const rebindError = rejectInvalidModelRebind(
+    positionals[0],
+    positionals[1],
+    values['rebind-model'],
+    values['rebind-reason']
+  );
+  if (rebindError) {
+    await fail(values.json === true, rebindError);
+    await shutdownTelemetry();
+    return 1;
+  }
   if (
     values['base-branch'] !== undefined &&
     (positionals[0] !== 'workflow' || positionals[1] !== 'run')
@@ -995,7 +1007,13 @@ async function main(): Promise<number> {
               resumeRunId,
               jsonFlag,
               effectiveCwd,
-              detachFlag
+              detachFlag,
+              values['rebind-model'] === undefined
+                ? undefined
+                : {
+                    assignments: values['rebind-model'] as string[],
+                    reason: values['rebind-reason'] as string,
+                  }
             );
             break;
           }

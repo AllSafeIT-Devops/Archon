@@ -3,6 +3,7 @@ import {
   createRunAiConfigurationSnapshot,
   readRunAiConfigurationSnapshot,
   restoreRunAiConfigurationDefaults,
+  type ResumeModelRebind,
 } from './run-ai-configuration';
 import type { RunAiConfigurationSnapshot } from './schemas/run-ai-configuration';
 import type { CredentialStatus } from '@archon/provider-contract';
@@ -43,6 +44,7 @@ export interface RunAiConfigurationOptions {
   aiConfigurationRun?: WorkflowRun;
   inheritAiConfiguration?: boolean;
   runConfig?: WorkflowRunConfigInput;
+  resumeModelRebind?: ResumeModelRebind;
   modelOverrideLayer?:
     | { kind: 'raw'; overrides: RunModelOverrides }
     | { kind: 'resolved'; overrides: ResolvedRunModelOverrides };
@@ -159,7 +161,7 @@ export async function prepareRunAiConfiguration(
     !snapshot && options.continuationRun
       ? readRunModelBindingsMetadata(deps.providers, options.continuationRun.metadata)
       : undefined;
-  const resolvedModelOverrides =
+  let resolvedModelOverrides =
     snapshot?.modelOverrides ??
     persistedModelBindings?.overrides ??
     (options.modelOverrideLayer?.kind === 'resolved'
@@ -169,6 +171,25 @@ export async function prepareRunAiConfiguration(
           baseAiProfile,
           options.modelOverrideLayer?.overrides
         ));
+  if (options.resumeModelRebind) {
+    const rebind = options.resumeModelRebind;
+    if (
+      !options.continuationRun ||
+      !snapshot ||
+      !rebind.reason.trim() ||
+      (!Object.keys(rebind.overrides.tiers ?? {}).length &&
+        !Object.keys(rebind.overrides.aliases ?? {}).length)
+    ) {
+      throw new Error(
+        'Model rebind requires an existing recorded continuation, nonempty bindings and an operator reason.'
+      );
+    }
+    const overrides = resolveRunModelOverrides(deps.providers, baseAiProfile, rebind.overrides);
+    resolvedModelOverrides = {
+      tiers: { ...resolvedModelOverrides.tiers, ...overrides.tiers },
+      aliases: { ...resolvedModelOverrides.aliases, ...overrides.aliases },
+    };
+  }
   const aiProfile = applyResolvedRunModelOverrides(baseAiProfile, resolvedModelOverrides);
   const modelBindingsMetadata = createRunModelBindingsMetadata(resolvedModelOverrides, aiProfile);
   let scope = resolveWorkflowModelScope(
@@ -205,7 +226,9 @@ export async function prepareRunAiConfiguration(
     }
   }
   const aiConfigurationSnapshot =
-    snapshot ??
+    (options.resumeModelRebind && snapshot
+      ? { ...snapshot, modelOverrides: resolvedModelOverrides }
+      : snapshot) ??
     createRunAiConfigurationSnapshot(deps.providers, config, baseAiProfile, resolvedModelOverrides);
   if (!snapshot) restoreRunAiConfigurationDefaults(deps.providers, config, aiConfigurationSnapshot);
   scope = resolveWorkflowModelScope(

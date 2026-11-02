@@ -12,6 +12,25 @@
 /** Workflow subcommands that continue an existing run. */
 const CONTINUE_SUBCOMMANDS = ['resume', 'approve', 'reject', 'respond'] as const;
 
+export function rejectInvalidModelRebind(
+  command: string | undefined,
+  subcommand: string | undefined,
+  assignments: unknown,
+  reason: unknown
+): string | undefined {
+  if (assignments === undefined && reason === undefined) return undefined;
+  if (command !== 'workflow' || subcommand !== 'resume')
+    return 'Error: --rebind-model and --rebind-reason require workflow resume <run-id>.';
+  if (
+    !Array.isArray(assignments) ||
+    !assignments.length ||
+    typeof reason !== 'string' ||
+    !reason.trim()
+  )
+    return 'Error: model rebind requires --rebind-model and a nonempty --rebind-reason.';
+  return undefined;
+}
+
 /**
  * Whether a `workflow` subcommand continues an existing run rather than starting one.
  *

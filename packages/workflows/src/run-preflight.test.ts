@@ -431,6 +431,48 @@ test('legacy continuation reloads configuration and retains only explicit model 
   expect(resumed.aiProfile.aliases['@new']?.model).toBe('gpt');
 });
 
+test('explicit resume rebind replaces all tiers while ordinary resume retains the saved Claude models', async () => {
+  const { deps } = fixture();
+  const workflow = makeTestResolvedWorkflow({ name: 'ai', model: 'large' });
+  const launch = await prepareRunAiConfiguration(deps, workflow, '/p', {
+    modelOverrideLayer: {
+      kind: 'raw',
+      overrides: {
+        tiers: {
+          large: 'claude/opus',
+          medium: 'claude/sonnet',
+          small: 'claude/sonnet',
+        },
+      },
+    },
+  });
+  const run = savedRun({ ai_configuration: launch.aiConfigurationSnapshot });
+  const before = JSON.stringify(run);
+  const rebind = {
+    resumeModelRebind: {
+      reason: 'Owner selected Grok',
+      overrides: {
+        tiers: {
+          large: 'codex/grok-4.7',
+          medium: 'codex/grok-4.7',
+          small: 'codex/grok-4.7',
+        },
+      },
+    },
+  };
+  const ordinary = await prepareRunAiConfiguration(deps, workflow, '/p', { continuationRun: run });
+  expect(ordinary.aiProfile.aliases.large?.provider).toBe('claude');
+  const rebound = await prepareRunAiConfiguration(deps, workflow, '/p', {
+    continuationRun: run,
+    ...rebind,
+  });
+  for (const tier of ['large', 'medium', 'small']) {
+    expect(rebound.aiProfile.aliases[tier]).toEqual({ provider: 'codex', model: 'grok-4.7' });
+  }
+  expect(rebound.aiConfigurationSnapshot.modelOverrides).toEqual(rebound.resolvedModelOverrides);
+  expect(JSON.stringify(run)).toBe(before);
+});
+
 test('restoration skips user preferences and native model rediscovery', async () => {
   const { deps, provider } = fixture();
   const workflow = makeTestResolvedWorkflow({ name: 'ai', provider: 'pi' });
