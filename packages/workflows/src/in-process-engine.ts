@@ -11,6 +11,7 @@ import {
 import type { WorkflowDeps } from './deps';
 import type { WorkflowExecutionResult } from './schemas';
 import { TerminalStatusWriteError, requireTerminalStatusWrite } from './terminal-status-write';
+import { prepareRunAiConfiguration } from './run-preflight';
 
 function rejectOptions(
   options: ExecuteWorkflowOptions | undefined,
@@ -46,6 +47,9 @@ export class InProcessWorkflowEngine implements IWorkflowEngine {
 
   async resume(input: WorkflowResumeInput): Promise<WorkflowResumeAdmission> {
     rejectOptions(input.options, RESUME_FORBIDDEN_OPTIONS, 'resume');
+    if (input.options?.resumeModelRebind && input.run.status !== 'failed') {
+      throw new Error('Explicit model rebind requires a failed terminal run.');
+    }
     const continuation = await resolveContinuationWorkflow(this.deps, input.run, input.cwd);
     let workflow = continuation?.workflow;
     if (!workflow) {
@@ -60,6 +64,13 @@ export class InProcessWorkflowEngine implements IWorkflowEngine {
         );
       }
       workflow = input.legacyWorkflow;
+    }
+    if (input.options?.resumeModelRebind) {
+      await prepareRunAiConfiguration(this.deps, workflow, input.cwd, {
+        codebaseId: input.run.codebase_id ?? undefined,
+        continuationRun: input.run,
+        resumeModelRebind: input.options.resumeModelRebind,
+      });
     }
     const hydrated = await hydrateResumableRun(this.deps, input.run, input.cursor);
     if (hydrated === null) return { accepted: false, reason: 'nothing-to-resume' };

@@ -65,6 +65,8 @@ export const cliArgOptions: CliArgOptions = {
   input: { type: 'string', multiple: true },
   // Repeatable sparse tier/@alias rebinding for one workflow invocation (#2481).
   model: { type: 'string', multiple: true },
+  'rebind-model': { type: 'string', multiple: true },
+  'rebind-reason': { type: 'string' },
   config: { type: 'string' },
   host: { type: 'string' },
   owner: { type: 'string' },

@@ -96,3 +96,47 @@ test('saved AI omissions remain omissions while native and process settings refr
   expect(current.assistants.claude).toEqual({ settingSources: ['user'] });
   expect(current.assistants.pi).toEqual({ env: { API_KEY: 'secret' }, maxConcurrent: 3 });
 });
+
+test('a recorded rebind selects its new generation without rewriting the original snapshot', () => {
+  const original = createRunAiConfigurationSnapshot(
+    providerRegistry,
+    config(),
+    buildAiProfile('claude'),
+    {
+      tiers: { large: { provider: 'claude', model: 'opus' } },
+    }
+  );
+  const next = structuredClone(original);
+  next.modelOverrides = { tiers: { large: { provider: 'codex', model: 'grok-4.7' } } };
+  const metadata = {
+    ai_configuration: original,
+    ai_configuration_generations: [
+      {
+        at: '2026-11-02T11:00:00Z',
+        reason: 'Owner selected Grok',
+        completedNodes: ['triage'],
+        configuration: next,
+      },
+    ],
+  };
+  expect(readRunAiConfigurationSnapshot(providerRegistry, metadata)).toEqual(next);
+  expect(metadata.ai_configuration.modelOverrides.tiers?.large?.provider).toBe('claude');
+  expect(metadata.ai_configuration_generations[0]!.completedNodes).toEqual(['triage']);
+});
+
+test('malformed rebind history fails closed rather than silently returning the original models', () => {
+  const original = createRunAiConfigurationSnapshot(
+    providerRegistry,
+    config(),
+    buildAiProfile('claude'),
+    {}
+  );
+  for (const generations of [null, [], [{ reason: '' }]]) {
+    expect(() =>
+      readRunAiConfigurationSnapshot(providerRegistry, {
+        ai_configuration: original,
+        ai_configuration_generations: generations,
+      })
+    ).toThrow('Invalid recorded model rebind history');
+  }
+});

@@ -5,13 +5,14 @@ import type { ResolvedWorkflow, WorkflowRun, WorkflowExecutionResult } from './s
 
 // These lists own both the public input exclusions and their runtime validation.
 export const FRESH_RUN_FORBIDDEN_OPTIONS = [
+  'resumeModelRebind',
   'priorCompletedNodes',
   'priorUsage',
   'priorNodeSessions',
 ] as const satisfies readonly (keyof ExecuteWorkflowOptions)[];
 
 export const RESUME_FORBIDDEN_OPTIONS = [
-  ...FRESH_RUN_FORBIDDEN_OPTIONS,
+  ...FRESH_RUN_FORBIDDEN_OPTIONS.filter(key => key !== 'resumeModelRebind'),
   'preCreatedRun',
   'runConfig',
   'preparedAiConfiguration',

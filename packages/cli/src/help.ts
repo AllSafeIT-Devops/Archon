@@ -182,6 +182,17 @@ const commandHelp: HelpEntry[] = [
     subcommand: 'resume',
     spec: 'workflow resume <run-id>',
     description: 'Resume a failed or paused run from completed nodes',
+    scopedFlags: [
+      {
+        spec: '--rebind-model <name=spec>',
+        description:
+          'Explicitly replace unfinished-node model bindings on a failed run (repeatable)',
+      },
+      {
+        spec: '--rebind-reason <reason>',
+        description: 'Required operator reason recorded with the new model generation',
+      },
+    ],
   },
   {
     command: 'workflow',

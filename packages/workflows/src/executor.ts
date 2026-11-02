@@ -1,4 +1,9 @@
-import { RUN_AI_CONFIGURATION_METADATA_KEY } from './run-ai-configuration';
+import {
+  RUN_AI_CONFIGURATION_METADATA_KEY,
+  modelRebindMetadata,
+  readRunAiGenerations,
+  type ResumeModelRebind,
+} from './run-ai-configuration';
 import type { OwnedWorktree, WorkflowRunOrigin } from './schemas/workflow-run';
 import {
   prepareRunAiConfiguration,
@@ -680,6 +685,8 @@ export type ExecuteWorkflowOptions = ResumePayload & {
   continuationMode?: ContinuationMode;
   /** One model-binding phase: raw at invocation boundaries, resolved for child runs. */
   modelOverrideLayer?: import('./run-preflight').RunAiConfigurationOptions['modelOverrideLayer'];
+  /** Explicit operator-selected models for unfinished nodes of a failed run. */
+  resumeModelRebind?: ResumeModelRebind;
   /** Validated sparse config supplied by a fresh CLI/HTTP workflow invocation. */
   runConfig?: WorkflowRunConfigInput;
   /**
@@ -1871,6 +1878,9 @@ export async function executeWorkflow(
   if (isContinuation && callerRunConfig !== undefined) {
     throw new Error('Cannot supply a run config when resuming an existing workflow run.');
   }
+  if (opts.resumeModelRebind && (!isContinuation || priorCompletedNodes === undefined)) {
+    throw new Error('Model rebind requires a resumed run with its completed-node snapshot.');
+  }
 
   const containsWait = (nodes: readonly (DagNode | IncludeDirective)[]): boolean =>
     nodes.some(node => {
@@ -1940,6 +1950,7 @@ export async function executeWorkflow(
             userId: executionUserId,
             runConfig: callerRunConfig,
             modelOverrideLayer,
+            resumeModelRebind: opts.resumeModelRebind,
             ...(isContinuation ? { continuationRun: preCreatedRun } : {}),
             aiConfigurationRun: recorded ? preCreatedRun : (adoptedAiRun ?? undefined),
             ...(recorded ? { inheritAiConfiguration: true } : {}),
@@ -2262,6 +2273,15 @@ export async function executeWorkflow(
     // A continuation keeps what its first execution recorded and restamps only the
     // execution owner, which is now this process.
     const invocationMetadata: Record<string, unknown> = {
+      ...(opts.resumeModelRebind
+        ? modelRebindMetadata(
+            preCreatedRun.metadata,
+            prepared.aiConfigurationSnapshot,
+            modelBindingsMetadata,
+            [...(priorCompletedNodes?.keys() ?? [])],
+            opts.resumeModelRebind.reason
+          )
+        : {}),
       ...(isContinuation
         ? {}
         : {
@@ -2282,6 +2302,7 @@ export async function executeWorkflow(
         metadata: invocationMetadata,
         ...(!isContinuation && preCreatedRun.working_path === null ? { working_path: cwd } : {}),
       });
+      Object.assign(preCreatedRun.metadata, invocationMetadata);
     } catch (error) {
       const err = error as Error;
       getLog().error(
@@ -3246,7 +3267,12 @@ export async function executeWorkflow(
             resolveChildIsolation
           ),
         priorUsage: dagPriorUsage,
-        priorNodeSessions,
+        // Completed outputs remain valid; provider sessions from before a model
+        // generation boundary must not be sent to the replacement provider.
+        priorNodeSessions: priorNodeSessions?.filter(
+          row =>
+            !readRunAiGenerations(workflowRun.metadata).at(-1)?.completedNodes.includes(row.node_id)
+        ),
         // Container runs resolve from the capture like every other run: it is bind-mounted
         // read-only at the SAME absolute path inside the container, so one source-roots
         // value means the same thing on both sides of the boundary.
