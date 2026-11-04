@@ -42,6 +42,8 @@ export interface CodexInventory {
   codexHome: string;
   /** MCP server names the user's and the project's config.toml define. */
   configuredServers: string[];
+  /** Definitions hidden until thread startup grants project trust; always disabled. */
+  inactiveProjectServers?: Record<string, Record<string, JsonValue>>;
   /** Installed plugin ids. Read only when the node names plugins; empty otherwise. */
   installedPlugins: string[];
   /** MCP server names of each named plugin, by id. */
@@ -54,6 +56,17 @@ export interface CodexInventory {
 // config as an open map, so `mcp_servers` has no generated shape to bind to.
 const configReadSchema = z.object({
   config: z.object({ mcp_servers: z.record(z.string(), z.unknown()).nullish() }),
+  layers: z
+    .array(
+      z.object({
+        name: z.object({ type: z.string() }),
+        disabledReason: z.string().nullish(),
+        config: z.object({
+          mcp_servers: z.record(z.string(), z.record(z.string(), z.json())).nullish(),
+        }),
+      })
+    )
+    .nullish(),
 });
 const pluginInstalledSchema: z.ZodType<{
   marketplaces: (Pick<PluginMarketplaceEntry, 'name' | 'path'> & {
@@ -144,13 +157,33 @@ export async function readCodexInventory(
   input: { cwd: string; plugins: readonly string[]; codexHome: string }
 ): Promise<CodexInventory> {
   const { cwd, plugins, codexHome } = input;
-  const config = await requestScoped(connection, 'config/read', { cwd }, configReadSchema);
+  const config = await requestScoped(
+    connection,
+    'config/read',
+    { cwd, includeLayers: true },
+    configReadSchema
+  );
   const inventory: CodexInventory = {
     codexHome,
     configuredServers: Object.keys(config.config.mcp_servers ?? {}),
     installedPlugins: [],
     namedPluginServers: {},
   };
+  // Thread startup can trust a project after inventory was read. Retain valid
+  // disabled definitions for Codex's config validation before that transition.
+  const inactive: Record<string, Record<string, JsonValue>> = {};
+  for (const layer of [...(config.layers ?? [])].reverse()) {
+    if (layer.name.type !== 'project' || !layer.disabledReason) continue;
+    for (const [name, definition] of Object.entries(layer.config.mcp_servers ?? {})) {
+      if (!inventory.configuredServers.includes(name)) {
+        inactive[name] = { ...inactive[name], ...definition, enabled: false };
+      }
+    }
+  }
+  inventory.inactiveProjectServers = inactive;
+  inventory.configuredServers = [
+    ...new Set([...inventory.configuredServers, ...Object.keys(inactive)]),
+  ];
   if (plugins.length === 0) return inventory;
 
   const { marketplaces } = await requestScoped(
@@ -218,7 +251,12 @@ export function applyNodeScope(
   }
 
   const mcpServers: JsonObject = {};
-  for (const name of inventory.configuredServers) mcpServers[name] = { enabled: false };
+  for (const name of inventory.configuredServers) {
+    mcpServers[name] = {
+      ...inventory.inactiveProjectServers?.[name],
+      enabled: false,
+    };
+  }
   Object.assign(mcpServers, declared);
 
   const scoped: ThreadConfig = {
