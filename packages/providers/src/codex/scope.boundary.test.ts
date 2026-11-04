@@ -13,7 +13,7 @@
  * The binary is required: a missing one fails here rather than skipping.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,8 @@ import type { MessageChunk, SendQueryOptions } from '../types';
 import { AppServerConnection } from './app-server';
 import { resolveBundledCodexBinary } from './binary-resolver';
 import { CodexProvider } from './provider';
+import { applyNodeScope, checkThreadMcpScope, readCodexInventory } from './scope';
+import type { ThreadStartResponse } from './protocol/v2/ThreadStartResponse';
 
 /** A minimal MCP stdio server whose one tool is named `<argv[2]>_marker`. */
 const MCP_STUB = `
@@ -461,3 +463,52 @@ describe('Codex capability scope on the real binary', () => {
     testTimeout(20_000)
   );
 });
+
+test(
+  'an untrusted project cannot start an undeclared MCP when thread startup grants trust',
+  async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'codex-untrusted-scope-'));
+    const fixtureHome = join(fixture, 'home');
+    const fixtureRepo = join(fixture, 'repo');
+    const marker = join(fixture, 'mcp-started');
+    await mkdir(fixtureHome);
+    await mkdir(join(fixtureRepo, '.git'), { recursive: true });
+    await mkdir(join(fixtureRepo, '.codex'));
+    const server = `command = ${toml(bun)}\nargs = ["-e", ${toml(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`)}]\n`;
+    await writeFile(join(fixtureHome, 'config.toml'), `[mcp_servers.user_only]\n${server}`);
+    await writeFile(
+      join(fixtureRepo, '.codex', 'config.toml'),
+      `[mcp_servers.project_only]\n${server}`
+    );
+    const connection = AppServerConnection.start(resolveBundledCodexBinary(), [], {
+      ...(process.env as Record<string, string>),
+      CODEX_HOME: fixtureHome,
+    });
+    try {
+      await connection.request('initialize', {
+        clientInfo: { name: 'archon-untrusted-scope-test', title: 'Scope test', version: '0' },
+        capabilities: null,
+      });
+      connection.notify('initialized');
+      const inventory = await readCodexInventory(connection, {
+        cwd: fixtureRepo,
+        plugins: [],
+        codexHome: fixtureHome,
+      });
+      const scoped = applyNodeScope({}, inventory, []);
+      const started = (await connection.request('thread/start', {
+        cwd: fixtureRepo,
+        ephemeral: true,
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+        config: scoped.config,
+      })) as ThreadStartResponse;
+      await checkThreadMcpScope(connection, started.thread.id, []);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await connection.shutdown(3000);
+      await removeTempTree(fixture);
+    }
+  },
+  testTimeout(60_000)
+);
